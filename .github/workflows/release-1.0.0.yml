@@ -1,0 +1,80 @@
+name: Publish ROTH 1.0.0
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/release-1.0.0.yml']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Build ROTH
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch --depth 1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          pwsh -NoProfile -File build.ps1
+      - name: Package app and HandBrake source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from concurrent.futures import ThreadPoolExecutor
+          import hashlib, re, shutil, tarfile, urllib.request, zipfile
+          stage = Path('release-stage')
+          stage.mkdir(exist_ok=True)
+          base = 'https://github.com/HandBrake/HandBrake/releases/download/1.11.2/'
+          def download(url, sha):
+              path = stage / url.rsplit('/', 1)[-1]
+              with urllib.request.urlopen(url, timeout=75) as response, path.open('wb') as out:
+                  shutil.copyfileobj(response, out)
+              if hashlib.sha256(path.read_bytes()).hexdigest() != sha:
+                  raise ValueError('Checksum failed: ' + path.name)
+              return path
+          binary = download(base + 'HandBrakeCLI-1.11.2-win-x86_64.zip',
+                            '80bfe8d5f5d11cc3ef76b834add3ed4e82dee6523ffeb435c283f88b1a21f09d')
+          source = download(base + 'HandBrake-1.11.2-source.tar.bz2',
+                            '12b046350f2422dc28783ff94229aff4ba5fe5e683431e057355d36163b2593a')
+          with zipfile.ZipFile(binary) as cli, zipfile.ZipFile('ROTH-Windows-x64.zip', 'w', zipfile.ZIP_DEFLATED) as package:
+              package.write('ROTH.exe')
+              package.write('README.md')
+              for entry in cli.infolist():
+                  if not entry.is_dir():
+                      package.writestr('HandBrakeCLI/' + entry.filename, cli.read(entry))
+          links = {}
+          with tarfile.open(source) as archive:
+              for entry in archive.getmembers():
+                  if not re.search(r'/contrib/[^/]+/module\.defs$', entry.name) or '/fdk-aac/' in entry.name:
+                      continue
+                  content = archive.extractfile(entry).read().decode()
+                  urls = re.findall(r'^\s*[\w-]+\.FETCH\.url\s*=\s*(https://github\.com/HandBrake/HandBrake-contribs/\S+)', content, re.M)
+                  hashes = re.findall(r'^\s*[\w-]+\.FETCH\.sha256\s*=\s*([a-f0-9]{64})', content, re.M)
+                  if len(urls) != len(hashes):
+                      raise ValueError('Unmatched source hashes: ' + entry.name)
+                  links.update(zip(urls, hashes))
+          if len(links) != 32:
+              raise ValueError('Incomplete HandBrake source list')
+          with ThreadPoolExecutor(max_workers=6) as pool:
+              contribs = list(pool.map(lambda item: download(*item), sorted(links.items())))
+          with zipfile.ZipFile('HandBrake-1.11.2-corresponding-source.zip', 'w') as package:
+              package.write(source, source.name)
+              for path in contribs:
+                  package.write(path, 'contribs/' + path.name)
+          PY
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create v1.0.0 ROTH-Windows-x64.zip HandBrake-1.11.2-corresponding-source.zip \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft \
+            --title "ROTH Video Compressor v1.0.0" \
+            --notes 'Download **ROTH-Windows-x64.zip**, extract it, and open ROTH.exe. HandBrakeCLI is included. The separate HandBrake source archive is for rebuilding the encoder.'
+          gh release edit v1.0.0 --repo "$GITHUB_REPOSITORY" --draft=false
