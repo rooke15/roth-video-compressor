@@ -11,32 +11,30 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Shell;
 using System.Windows.Threading;
 using Microsoft.Win32;
 
 internal sealed class Roth : Window
 {
-    private const double TitleBarHeight = 74;
+    private const double TitleBarHeight = 60;
     private static readonly string Root = Path.GetDirectoryName(typeof(Roth).Assembly.Location);
     private static readonly Brush Ink = Color("#F6F2F3"), Muted = Color("#ADA3AB"), Red = Color("#F05A68");
     private static readonly Regex EncodeProgress = new Regex(
         @"Encoding:\s+task\s+(\d+)\s+of\s+(\d+),\s*([\d.]+)\s*%",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
     private readonly Preset[] profiles = {
-        new Preset("Telegram Ultra Small", "480p", "Smallest file for sharing", 480, 0, 26, 48, "slow"),
-        new Preset("Telegram Balanced", "540p", "Balanced file size and quality", 540, 0, 23, 64, "slow"),
-        new Preset("Telegram High Quality", "720p", "Preserve more detail", 720, 0, 22, 64, "slow"),
-        new Preset("Story / Status", "1080 × 1920", "For vertical videos", 1920, 1080, 25, 64, "medium"),
-        new Preset("Fast Share", "720p", "Faster encoding", 720, 0, 25, 64, "fast"),
-        new Preset("Original Size", "Original", "Keep the original frame size", 0, 0, 23, 64, "slow")
+        new Preset("Ultra Small", "480p", "For when file size matters most.", 480, 0, 26, 48, "slow"),
+        new Preset("Medium", "540p", "Good for most clips.", 540, 0, 23, 64, "slow"),
+        new Preset("High Quality", "720p", "Keeps more fine detail.", 720, 0, 22, 64, "slow")
     };
     private readonly ControlTemplate buttons;
     private readonly Grid shell = new Grid();
     private readonly MediaPlayer completionSound = new MediaPlayer();
     private readonly DispatcherTimer playbackClock = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(160) };
-    private readonly Button[] cards = new Button[6];
+    private readonly Button[] cards = new Button[3];
+    private Button advanced;
+    private Preset custom;
     private Button pick, compress, save, play, cancel;
     private CancellationTokenSource jobCancellation;
     private TextBlock filename, detail, status, empty, resultInfo;
@@ -67,7 +65,7 @@ internal sealed class Roth : Window
 
     private Roth()
     {
-        Title = "ROTH — Video Compressor";
+        Title = "ROTH Video Compressor";
         FontFamily = new FontFamily("Segoe UI");
         Background = Color("#100E13");
         WindowStyle = WindowStyle.None;
@@ -100,7 +98,6 @@ internal sealed class Roth : Window
               </ControlTemplate>");
         Content = shell;
         BuildWorkspace();
-        Loaded += (s, e) => Splash();
         Closing += (s, e) => { if (busy || batchRunning) e.Cancel = true; };
         Closed += (s, e) => {
             playbackClock.Stop();
@@ -141,10 +138,9 @@ internal sealed class Roth : Window
         }
         var brand = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         brand.Children.Add(Mark(30));
-        var wordmark = Label("ROTH", 20);
+        var wordmark = Label("ROTH Video Compressor", 16);
         wordmark.Margin = new Thickness(10, 0, 22, 0);
         brand.Children.Add(wordmark);
-        brand.Children.Add(Label("Video Compressor", 13, Muted));
         header.Children.Add(brand);
 
         var layout = new Grid { Margin = new Thickness(32, 12, 32, 28) };
@@ -160,8 +156,8 @@ internal sealed class Roth : Window
         leftPanel.Children.Add(actions);
         leftPanel.Children.Add(new ScrollViewer { Content = left, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden });
         layout.Children.Add(leftPanel);
-        left.Children.Add(Label("Compress Video", 34));
-        var sub = Label("On-device processing  ·  MP4", 14, Muted);
+        left.Children.Add(Label("Compress a video", 27));
+        var sub = Label("Choose a file, then pick a preset.", 13, Muted);
         sub.Margin = new Thickness(0, 4, 0, 22);
         left.Children.Add(sub);
         pick = Button("Choose Video", false);
@@ -199,7 +195,7 @@ internal sealed class Roth : Window
             };
             ToolTipService.SetInitialShowDelay(card, 180);
             card.MouseEnter += (s, e) => detail.Text = p.Detail;
-            card.MouseLeave += (s, e) => detail.Text = profiles[selected].Detail;
+            card.MouseLeave += (s, e) => detail.Text = ActivePreset.Detail;
             card.Click += (s, e) => SelectPreset(index);
             presetList.Children.Add(card);
             cards[i] = card;
@@ -209,6 +205,11 @@ internal sealed class Roth : Window
         detail.MinHeight = 53;
         detail.Margin = new Thickness(2, 5, 0, 8);
         left.Children.Add(detail);
+        advanced = Button("Advanced settings…", false);
+        advanced.Height = 34;
+        advanced.HorizontalAlignment = HorizontalAlignment.Left;
+        advanced.Click += (s, e) => EditAdvanced();
+        left.Children.Add(advanced);
         SelectPreset(0);
         compress = Button("Compress Video", true);
         compress.IsEnabled = false;
@@ -332,7 +333,6 @@ internal sealed class Roth : Window
                 playbackBar.Visibility = Visibility.Visible;
                 SyncTimeline();
             }
-            PulsePlay(3);
         };
         video.MediaEnded += (s, e) => { SetPlayback(false); video.Position = TimeSpan.Zero; SyncTimeline(); };
         video.MediaFailed += async (s, e) => await PreviewFallback();
@@ -344,46 +344,101 @@ internal sealed class Roth : Window
         screen.Children.Add(empty);
     }
 
-    private void Splash()
-    {
-        var overlay = new Grid { Background = new RadialGradientBrush(ColorValue("#38151F"), ColorValue("#0D0B10")) };
-        var lockup = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        var mark = Mark(154);
-        var scale = new ScaleTransform(.78, .78);
-        mark.RenderTransformOrigin = new Point(.5, .5);
-        mark.RenderTransform = scale;
-        lockup.Children.Add(mark);
-        var word = Label("R O T H", 35);
-        word.HorizontalAlignment = HorizontalAlignment.Center;
-        word.Margin = new Thickness(0, 20, 0, 0);
-        lockup.Children.Add(word);
-        lockup.Children.Add(new Border { Height = 2, Width = 76, Margin = new Thickness(0, 20, 0, 0), Background = Red });
-        overlay.Children.Add(lockup);
-        shell.Children.Add(overlay);
-        var grow = new DoubleAnimation(.78, 1.04, TimeSpan.FromMilliseconds(850)) { EasingFunction = new CubicEase() };
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, grow);
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
-        var pulse = new DoubleAnimation(.15, 1, TimeSpan.FromMilliseconds(540)) { EasingFunction = new SineEase() };
-        mark.BeginAnimation(OpacityProperty, pulse);
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1050) };
-        timer.Tick += (s, e) => {
-            timer.Stop();
-            var fade = new DoubleAnimation(0, TimeSpan.FromMilliseconds(360));
-            fade.Completed += (a, b) => shell.Children.Remove(overlay);
-            overlay.BeginAnimation(OpacityProperty, fade);
-        };
-        timer.Start();
-    }
-
     private void SelectPreset(int index)
     {
         selected = index;
+        custom = null;
+        RefreshPreset();
+    }
+
+    private Preset ActivePreset { get { return custom ?? profiles[selected]; } }
+
+    private void RefreshPreset()
+    {
         for (int i = 0; i < cards.Length; i++)
         {
-            cards[i].Background = Color(i == selected ? "#361923" : "#211C24");
-            cards[i].BorderBrush = Color(i == selected ? "#D6344D" : "#382F3A");
+            bool active = custom == null && i == selected;
+            cards[i].Background = Color(active ? "#361923" : "#211C24");
+            cards[i].BorderBrush = Color(active ? "#D6344D" : "#382F3A");
         }
-        detail.Text = profiles[selected].Detail;
+        advanced.Content = custom == null ? "Advanced settings…" : "Advanced settings · active";
+        detail.Text = ActivePreset.Detail;
+    }
+
+    private void EditAdvanced()
+    {
+        var current = ActivePreset;
+        var dialog = new Window {
+            Owner = this, Title = "Advanced settings", WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            SizeToContent = SizeToContent.Height, Width = 460, ResizeMode = ResizeMode.NoResize,
+            Background = Color("#18151B"), ShowInTaskbar = false, FontFamily = FontFamily
+        };
+        var form = new StackPanel { Margin = new Thickness(24) };
+        dialog.Content = form;
+        form.Children.Add(Label("Encoding options", 20));
+        var heights = new[] { 0, 360, 480, 540, 720, 1080, 1440, 2160 };
+        var sizes = new[] { "Original", "360p", "480p", "540p", "720p", "1080p", "1440p", "2160p" };
+        var speeds = new[] { "veryfast", "fast", "medium", "slow", "slower" };
+        var size = Options(form, "Maximum height", sizes, Array.IndexOf(heights, current.Height));
+        var codec = Options(form, "Codec", new[] { "H.265 / HEVC", "H.264 / AVC" }, current.Codec == "x264" ? 1 : 0);
+        var speed = Options(form, "Encoding speed", speeds, Array.IndexOf(speeds, current.Speed));
+        var rate = Options(form, "Rate control", new[] { "Constant quality (RF)", "Average video bitrate (kbps)" },
+            current.Bitrate > 0 ? 1 : 0);
+        var value = new TextBox { Height = 30, VerticalContentAlignment = VerticalAlignment.Center, FontSize = 13,
+            Padding = new Thickness(7, 0, 7, 0), Background = Color("#242026"), Foreground = Ink,
+            BorderBrush = Color("#494049"), CaretBrush = Ink };
+        form.Children.Add(value);
+        var hint = Label("", 12, Muted);
+        hint.TextWrapping = TextWrapping.Wrap;
+        hint.Margin = new Thickness(0, 8, 0, 14);
+        form.Children.Add(hint);
+        Action updateRate = () => {
+            bool qualityMode = rate.SelectedIndex == 0;
+            value.Text = (qualityMode ? current.Rf : current.Bitrate > 0 ? current.Bitrate : 1200)
+                .ToString(CultureInfo.InvariantCulture);
+            hint.Text = qualityMode ? "Lower RF keeps more detail and usually makes a larger file. Enter 0–51."
+                : "Enter an average video bitrate of 50–100,000 kbps. Audio adds to the final size.";
+        };
+        rate.SelectionChanged += (s, e) => updateRate();
+        updateRate();
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var cancelEdit = Button("Cancel", false);
+        cancelEdit.IsCancel = true;
+        actions.Children.Add(cancelEdit);
+        var apply = Button("Apply", true);
+        apply.Margin = new Thickness(8, 0, 0, 0);
+        apply.IsDefault = true;
+        actions.Children.Add(apply);
+        form.Children.Add(actions);
+        apply.Click += (s, e) => {
+            int number;
+            bool average = rate.SelectedIndex == 1;
+            if (!int.TryParse(value.Text, out number) ||
+                (average ? number < 50 || number > 100000 : number < 0 || number > 51))
+            {
+                hint.Text = average ? "Enter a whole number from 50 to 100,000." : "Enter a whole number from 0 to 51.";
+                value.Focus();
+                return;
+            }
+            custom = new Preset("Custom", sizes[size.SelectedIndex], "Custom · " + sizes[size.SelectedIndex],
+                heights[size.SelectedIndex], 0, average ? current.Rf : number, 64, speeds[speed.SelectedIndex],
+                codec.SelectedIndex == 1 ? "x264" : "x265", average ? number : 0);
+            RefreshPreset();
+            dialog.DialogResult = true;
+        };
+        dialog.ShowDialog();
+    }
+
+    private static ComboBox Options(Panel panel, string name, string[] entries, int selectedIndex)
+    {
+        var title = Label(name, 13, Muted);
+        title.Margin = new Thickness(0, 13, 0, 5);
+        panel.Children.Add(title);
+        var list = new ComboBox { ItemsSource = entries, SelectedIndex = Math.Max(0, selectedIndex),
+            Height = 30, FontSize = 13 };
+        System.Windows.Automation.AutomationProperties.SetName(list, name);
+        panel.Children.Add(list);
+        return list;
     }
 
     private void PickFile()
@@ -451,9 +506,9 @@ internal sealed class Roth : Window
         try { EnsureJobDirectory(); }
         catch (IOException) { status.Text = "Couldn’t create the temporary output folder."; return; }
         catch (UnauthorizedAccessException) { status.Text = "Couldn’t access the temporary output folder."; return; }
-        var profile = profiles[selected];
+        var profile = ActivePreset;
         batchRunning = true;
-        pick.IsEnabled = presetList.IsEnabled = compress.IsEnabled = false;
+        pick.IsEnabled = presetList.IsEnabled = advanced.IsEnabled = compress.IsEnabled = false;
         status.Text = "Batch running · up to two videos at a time";
         try
         {
@@ -467,7 +522,7 @@ internal sealed class Roth : Window
         finally
         {
             batchRunning = false;
-            pick.IsEnabled = presetList.IsEnabled = true;
+            pick.IsEnabled = presetList.IsEnabled = advanced.IsEnabled = true;
         }
         BatchJob first = null;
         int completed = 0;
@@ -501,9 +556,10 @@ internal sealed class Roth : Window
                 job.Meter.Value = value;
                 job.State.Text = "Encoding · " + Math.Floor(value) + "%";
             });
-            await Task.Run(() => Transcode(job.Source, output, "x265", profile, token, report, true));
+            await Task.Run(() => Transcode(job.Source, output, profile.Codec, profile, token, report, true));
             token.ThrowIfCancellationRequested();
             job.Output = output;
+            job.CodecName = profile.CodecName;
             job.Meter.Value = 100;
             job.State.Text = "Ready · 100%";
             job.Action.Content = "Preview";
@@ -526,7 +582,7 @@ internal sealed class Roth : Window
         result = job.Output;
         previewCopy = null;
         save.IsEnabled = true;
-        resultInfo.Text = (new FileInfo(result).Length / 1000000.0).ToString("0.##") + " MB  ·  HEVC";
+        resultInfo.Text = (new FileInfo(result).Length / 1000000.0).ToString("0.##") + " MB  ·  " + job.CodecName;
         empty.Visibility = Visibility.Visible;
         status.Text = "Ready to save";
         OpenPreview(result);
@@ -572,14 +628,14 @@ internal sealed class Roth : Window
         {
             EnsureJobDirectory();
             var output = Path.Combine(jobDir, Guid.NewGuid().ToString("N") + ".mp4");
-            var profile = profiles[selected];
+            var profile = ActivePreset;
             var source = input;
             var token = jobCancellation.Token;
             var reporting = TrackProgress("Compression", token);
-            await Task.Run(() => Transcode(source, output, "x265", profile, token, reporting));
+            await Task.Run(() => Transcode(source, output, profile.Codec, profile, token, reporting));
             token.ThrowIfCancellationRequested();
             result = output;
-            resultInfo.Text = (new FileInfo(result).Length / 1000000.0).ToString("0.##") + " MB  ·  HEVC";
+            resultInfo.Text = (new FileInfo(result).Length / 1000000.0).ToString("0.##") + " MB  ·  " + profile.CodecName;
             save.IsEnabled = true;
             status.Text = "100% · Ready to save";
             PlayCompletionSound();
@@ -632,7 +688,7 @@ internal sealed class Roth : Window
                 new Preset("", "", "", 540, 960, 24, 64, "ultrafast"), token, reporting));
             token.ThrowIfCancellationRequested();
             OpenPreview(destination);
-            status.Text = "Preview H.264  ·  HEVC export";
+            status.Text = "Playing a compatible preview. Save As keeps your selected format.";
         }
         catch (OperationCanceledException)
         {
@@ -653,12 +709,13 @@ internal sealed class Roth : Window
     {
         var exe = EncoderPath;
         if (!File.Exists(exe)) throw new IOException("HandBrakeCLI is missing from the ROTH folder.");
+        var rate = profile.Bitrate > 0 ? " -b " + profile.Bitrate : " -q " + profile.Rf;
         var arguments = "-i \"" + source + "\" -o \"" + target + "\" -f av_mp4 -e " + codec
-            + " --encoder-preset " + profile.Speed + " -q " + profile.Rf + " -a 1 -E av_aac -B "
+            + " --encoder-preset " + profile.Speed + rate + " -a 1 -E av_aac -B "
             + profile.Audio + " -6 stereo -R 48 -r 30 --pfr -O --no-markers --crop 0:0:0:0 --no-metadata";
         if (profile.Height > 0) arguments += " -Y " + profile.Height;
         if (profile.Width > 0) arguments += " -X " + profile.Width;
-        if (limitThreads) arguments += " -x pools=2:frame-threads=2";
+        if (limitThreads) arguments += codec == "x265" ? " -x pools=2:frame-threads=2" : " -x threads=2";
         try
         {
             token.ThrowIfCancellationRequested();
@@ -738,7 +795,7 @@ internal sealed class Roth : Window
         cancel.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
         compress.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
         cancel.IsEnabled = value;
-        pick.IsEnabled = presetList.IsEnabled = !value;
+        pick.IsEnabled = presetList.IsEnabled = advanced.IsEnabled = !value;
         compress.IsEnabled = !value && input != null && batch.Count == 0;
         if (value) progress.Value = 0;
         progress.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
@@ -752,7 +809,6 @@ internal sealed class Roth : Window
         {
             video.Play();
             playbackClock.Start();
-            PulsePlay(1);
         }
         else
         {
@@ -799,14 +855,6 @@ internal sealed class Roth : Window
         return time.TotalHours >= 1 ? time.ToString(@"h\:mm\:ss") : time.ToString(@"m\:ss");
     }
 
-    private void PulsePlay(int cycles)
-    {
-        var glow = new SolidColorBrush(ColorValue("#F05A68"));
-        play.BorderBrush = glow;
-        glow.BeginAnimation(SolidColorBrush.ColorProperty, new ColorAnimation(ColorValue("#713343"),
-            TimeSpan.FromMilliseconds(380)) { AutoReverse = true, RepeatBehavior = new RepeatBehavior(cycles) });
-    }
-
     private void PlayCompletionSound()
     {
         var cue = Path.Combine(Root, "roth-complete.mp3");
@@ -845,19 +893,23 @@ internal sealed class Roth : Window
 
     private sealed class Preset
     {
-        public readonly string Name, Size, Speed, Detail;
-        public readonly int Height, Width, Rf, Audio;
-        public Preset(string name, string size, string note, int height, int width, int rf, int audio, string speed)
+        public readonly string Name, Size, Speed, Detail, Codec;
+        public readonly int Height, Width, Rf, Audio, Bitrate;
+        public string CodecName { get { return Codec == "x264" ? "H.264" : "HEVC"; } }
+        public Preset(string name, string size, string note, int height, int width, int rf, int audio,
+            string speed, string codec = "x265", int bitrate = 0)
         {
             Name = name; Size = size; Height = height; Width = width; Rf = rf; Audio = audio; Speed = speed;
-            Detail = note + "\nHEVC " + speed + " · RF " + rf + " · AAC " + audio + " kbps · up to 30 fps";
+            Codec = codec; Bitrate = bitrate;
+            var rate = bitrate > 0 ? bitrate + " kbps" : "RF " + rf;
+            Detail = note + "\n" + CodecName + " · " + speed + " · " + rate + " · AAC " + audio + " kbps";
         }
     }
 
     private sealed class BatchJob
     {
         public readonly CancellationTokenSource Cancellation = new CancellationTokenSource();
-        public string Source, Output;
+        public string Source, Output, CodecName;
         public TextBlock State;
         public ProgressBar Meter;
         public Button Action;

@@ -11,9 +11,11 @@ You’ll need 64-bit Windows 10 or 11 on an Intel or AMD processor, with .NET Fr
 ## Use it
 
 1. Drop a video into ROTH or pick one with **Choose Video**. You can select several files at once.
-2. Pick **Telegram Ultra Small** to save data or **Telegram Balanced** if you want more detail. **Fast Share** is handy if you’re in a hurry.
+2. Pick **Ultra Small**, **Medium**, or **High Quality**. For more control, open **Advanced settings** and choose a resolution limit, codec, encoding speed, and either constant quality or average bitrate.
 3. Click **Compress Video**. If you select several files, ROTH works on two at a time and shows progress for each.
-4. Use **Play** to check the result, then **Save As…** to keep the MP4. You can send it in Telegram as a file to avoid another round of compression.
+4. Use **Play** to check the result, then **Save As…** to keep the MP4.
+
+H.264 is a good choice when playback compatibility matters. For H.265, a slower encoding preset takes longer and usually compresses more efficiently.
 
 ## Build from source
 
