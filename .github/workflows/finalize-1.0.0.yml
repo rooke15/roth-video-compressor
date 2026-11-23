@@ -1,0 +1,30 @@
+name: Finalize ROTH 1.0.0
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/finalize-1.0.0.yml']
+permissions:
+  contents: write
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Make the verified release public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/$GITHUB_REPOSITORY/releases"
+          old=454689723
+          current=$(gh api "$api/tags/v1.0.0" --jq .id)
+          test "$current" = "$old"
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.0.0" --jq .object.sha)
+          test "$tag" = ffd6d83a9358396ec393e906b1c2351b5c1bfbd4
+          ids=$(gh api "$api?per_page=30" --jq '.[] | select(.draft and .tag_name == "v1.0.0") | select((.assets | map(.name) | sort) == ["HandBrake-1.11.2-corresponding-source.zip", "ROTH-Windows-x64.zip"]) | .id')
+          [[ "$ids" =~ ^[0-9]+$ ]]
+          archived=$(gh api --method PATCH "$api/$old" -F draft=true --jq .draft)
+          test "$archived" = true
+          gh api --method PATCH "$api/$ids" -F draft=false -f make_latest=true --jq '.html_url'
+          test "$(gh api "$api/tags/v1.0.0" --jq .id)" = "$ids"
